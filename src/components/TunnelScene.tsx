@@ -38,12 +38,19 @@ import {
   rockMap,
 } from '../lib/textures'
 import Motorcycle from './Motorcycle'
+import NavCorridor from './NavCorridor'
 
 interface Props {
   sim: SimResult
   idxRef: MutableRefObject<number>
   /** 0..1 through the 30-second script, drives the camera and the light rig. */
   progress: MutableRefObject<number>
+  /**
+   * FOLLOW rides the AI+ESKF estimate down the corridor. CINEMATIC is the
+   * original scripted camera and stays the default, so the existing
+   * presentation is unchanged unless the viewer asks for FOLLOW.
+   */
+  cameraMode?: 'cinematic' | 'follow'
 }
 
 const SKY = '#a9c4d8'
@@ -682,6 +689,55 @@ function CameraScript({ sim, idxRef, progress }: Props) {
   return null
 }
 
+/**
+ * FOLLOW mode: the camera rides the AI+ESKF estimate itself rather than a
+ * scripted path, which is what makes the corridor read as something being
+ * navigated rather than something being played back.
+ *
+ * It sits behind and above the estimate, looks a short way ahead along the
+ * estimate's own heading, and damps every channel so a 10 Hz frame rate never
+ * reaches the eye as judder. It adds nothing to the scene; it only drives the
+ * existing camera.
+ */
+function FollowCamera({ sim, idxRef }: { sim: SimResult; idxRef: MutableRefObject<number> }) {
+  const { camera } = useThree()
+  const look = useMemo(() => new THREE.Vector3(), [])
+  const desired = useMemo(() => new THREE.Vector3(), [])
+  const ahead = useMemo(() => new THREE.Vector3(), [])
+  const settled = useRef(false)
+
+  useFrame((_, rawDt) => {
+    const dt = Math.min(rawDt, 0.05)
+    const p = samplePose(sim.frames, idxRef.current)
+
+    const fx = Math.sin(p.yaw)
+    const fz = Math.cos(p.yaw)
+
+    const back = 7.2
+    const height = 2.35
+    const lead = 9.5
+    desired.set(p.x - fx * back, height, p.z - fz * back)
+    ahead.set(p.x + fx * lead, 1.05, p.z + fz * lead)
+
+    if (!settled.current) {
+      camera.position.copy(desired)
+      look.copy(ahead)
+      settled.current = true
+    }
+
+    camera.position.x = damp(camera.position.x, desired.x, 5, dt)
+    camera.position.y = damp(camera.position.y, desired.y, 5, dt)
+    camera.position.z = damp(camera.position.z, desired.z, 5, dt)
+
+    look.x = damp(look.x, ahead.x, 6, dt)
+    look.y = damp(look.y, ahead.y, 6, dt)
+    look.z = damp(look.z, ahead.z, 6, dt)
+    camera.lookAt(look)
+  })
+
+  return null
+}
+
 /** A soft contact shadow under the bike, so it never looks like it floats. */
 function ContactShadow({ sim, idxRef }: { sim: SimResult; idxRef: MutableRefObject<number> }) {
   const ref = useRef<THREE.Mesh>(null!)
@@ -709,24 +765,30 @@ function ContactShadow({ sim, idxRef }: { sim: SimResult; idxRef: MutableRefObje
 
 // ---------------------------------------------------------------------------
 
-function Scene({ sim, idxRef, progress }: Props) {
+function Scene({ sim, idxRef, progress, cameraMode }: Props) {
   const line = useCenterline(sim)
   return (
     <>
       <fog attach="fog" args={[HAZE, 120, 900]} />
       <Lights sim={sim} idxRef={idxRef} />
-      <CameraScript sim={sim} idxRef={idxRef} progress={progress} />
+      {cameraMode === 'follow' ? (
+        <FollowCamera sim={sim} idxRef={idxRef} />
+      ) : (
+        <CameraScript sim={sim} idxRef={idxRef} progress={progress} />
+      )}
       <Terrain sim={sim} line={line} />
       <Bore sim={sim} line={line} />
       <Fittings sim={sim} line={line} idxRef={idxRef} />
       <BeamHaze sim={sim} idxRef={idxRef} />
       <ContactShadow sim={sim} idxRef={idxRef} />
       <Motorcycle sim={sim} idxRef={idxRef} />
+      {/* The navigation corridor, drawn over the tunnel it is describing. */}
+      <NavCorridor sim={sim} idxRef={idxRef} />
     </>
   )
 }
 
-export default function TunnelScene({ sim, idxRef, progress }: Props) {
+export default function TunnelScene({ sim, idxRef, progress, cameraMode = 'cinematic' }: Props) {
   const [ready, setReady] = useState(false)
   useEffect(() => {
     const raf = requestAnimationFrame(() => setReady(true))
@@ -753,7 +815,7 @@ export default function TunnelScene({ sim, idxRef, progress }: Props) {
       gl={{ antialias: true, powerPreference: 'high-performance', toneMapping: THREE.ACESFilmicToneMapping }}
       camera={{ fov: 46, near: 0.25, far: 1400, position: [0, 3, -12] }}
     >
-      <Scene sim={sim} idxRef={idxRef} progress={progress} />
+      <Scene sim={sim} idxRef={idxRef} progress={progress} cameraMode={cameraMode} />
       <AdaptiveQuality />
     </Canvas>
   )

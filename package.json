@@ -7,6 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
+    "check:corridor": "node check-corridor.mjs",
+    "check:shaders": "node check-shaders.mjs",
+    "check": "npm run check:corridor && npm run check:shaders",
     "preview": "vite preview"
   },
   "dependencies": {

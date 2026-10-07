@@ -3,9 +3,9 @@
 // report carries — a text column, italic notes, and tables that hold the
 // numbers. No view switchers, no camera buttons, nothing to configure.
 
-import { Suspense, lazy, useEffect, useRef } from 'react'
+import { Suspense, lazy, useEffect, useRef, useState } from 'react'
 import { SCENARIO, SCRIPT_SECONDS, stageOf, useRun } from './run'
-import type { SimResult } from './lib/sim/engine'
+import type { SimFrame, SimResult } from './lib/sim/engine'
 
 const TunnelScene = lazy(() => import('./components/TunnelScene'))
 
@@ -140,6 +140,85 @@ function PlanInset({ run }: { run: ReturnType<typeof useRun> }) {
   )
 }
 
+/**
+ * Live navigation state, read from the current frame. The corridor already
+ * expresses most of this as spatial behaviour — a tight envelope when the
+ * filter is certain, a wide one when it is guessing — so this strip stays to
+ * the quantities that have no spatial equivalent: the fusion weights and the
+ * model's slip call.
+ */
+function NavState({ frame }: { frame: SimFrame }) {
+  const weights = [
+    ['GNSS', frame.wGnss, '#7FD4C1'],
+    ['WHEEL', frame.wOdom, '#C79A3C'],
+    ['IMU', frame.wImu, '#E0604F'],
+  ] as const
+  const sigma = frame.covariance > 0 ? Math.sqrt(frame.covariance) : 0
+
+  return (
+    <div className="on-dark pointer-events-none absolute right-4 top-14 hidden w-[188px] sm:block">
+      <p className="label mb-1.5 leading-tight">
+        FUSION · σ {sigma.toFixed(2)} m
+      </p>
+      {weights.map(([k, w, c]) => (
+        <div key={k} className="mb-1">
+          <div className="flex items-baseline justify-between">
+            <span className="text-[10px] tracking-[0.1em] text-white/50 uppercase">{k}</span>
+            <span className="text-[11px] tabular-nums text-white/80">{w.toFixed(2)}</span>
+          </div>
+          <div className="mt-0.5 h-[2px] w-full bg-white/15">
+            <div
+              className="h-full"
+              style={{ width: `${Math.max(0, Math.min(1, w)) * 100}%`, background: c }}
+            />
+          </div>
+        </div>
+      ))}
+      <p className="label mt-1.5 leading-tight">
+        SLIP CALL{' '}
+        <span
+          className="tabular-nums"
+          style={{ color: frame.predSlip > 0.5 ? '#e8a33d' : 'rgba(255,255,255,0.6)' }}
+        >
+          {(frame.predSlip * 100).toFixed(0)}%
+        </span>
+        <span className="text-white/40"> · true {(frame.slip * 100).toFixed(1)}%</span>
+      </p>
+    </div>
+  )
+}
+
+/** Which ribbon is which. Solid behind the marker, dashed ahead of it. */
+function CorridorLegend() {
+  const rows = [
+    ['#7FD4C1', 'AI + ESKF', 'the estimate the corridor is built around'],
+    ['#C79A3C', 'Standard ESKF', 'fixed gains, no model'],
+    ['#E0604F', 'Uncorrected DR', 'pure integration, never corrected'],
+    ['#7a8b93', 'Ground truth', 'the road the bike actually followed'],
+  ] as const
+
+  return (
+    <figure className="on-dark m-0 w-[214px] shrink-0">
+      <figcaption className="label leading-tight">
+        Trajectories.
+        <br />
+        <span className="text-white/45">Solid behind you, dashed ahead.</span>
+      </figcaption>
+      <dl className="mt-2">
+        {rows.map(([c, k, why]) => (
+          <div key={k} className="mt-1.5">
+            <dt className="flex items-center gap-1.5 text-[10px] tracking-[0.1em] text-white/70 uppercase">
+              <span className="inline-block h-[7px] w-[7px] rounded-full" style={{ background: c }} />
+              {k}
+            </dt>
+            <dd className="mt-0.5 ml-[15px] text-[11px] leading-tight text-white/40">{why}</dd>
+          </div>
+        ))}
+      </dl>
+    </figure>
+  )
+}
+
 // ---------------------------------------------------------------------------
 // Evidence — every number computed by this run, nothing typed in by hand
 // ---------------------------------------------------------------------------
@@ -196,6 +275,9 @@ export default function Seam() {
   const run = useRun()
   const { sim, playing, done, toggle, seek, replay, progressRef } = run
   const bar = useRef<HTMLInputElement>(null)
+  // Cinematic is the original camera and stays the default; FOLLOW is opt-in,
+  // so the presentation a visitor sees first is unchanged.
+  const [cameraMode, setCameraMode] = useState<'cinematic' | 'follow'>('cinematic')
 
   // paint the scrub thumb from the rAF loop, so it tracks the 3D exactly
   useEffect(() => {
@@ -246,7 +328,12 @@ export default function Seam() {
           <figure className="plate figure">
             <Suspense fallback={<div className="on-dark grid aspect-[3.1/1] place-items-center label">Cutting the bore…</div>}>
               <div className="stage">
-                <TunnelScene sim={sim} idxRef={run.idxRef} progress={progressRef} />
+                <TunnelScene
+                  sim={sim}
+                  idxRef={run.idxRef}
+                  progress={progressRef}
+                  cameraMode={cameraMode}
+                />
               </div>
             </Suspense>
 
@@ -254,6 +341,7 @@ export default function Seam() {
             <div className="on-dark pointer-events-none absolute left-4 top-14 hidden sm:block">
               <PlanInset run={run} />
             </div>
+            <NavState frame={sim.frames[run.ui]} />
             <Readout run={run} />
 
             <div className="on-dark absolute inset-x-0 top-0 flex justify-between p-3 sm:p-4">
@@ -268,6 +356,14 @@ export default function Seam() {
           <div className="wipe-controls">
             <button type="button" className="on-dark plain-btn border-white/30 text-white/90 hover:border-white" onClick={toggle}>
               {playing ? 'Pause' : done ? 'Play again' : 'Play'}
+            </button>
+            <button
+              type="button"
+              className="on-dark plain-btn border-white/30 text-white/90 hover:border-white"
+              onClick={() => setCameraMode((m) => (m === 'follow' ? 'cinematic' : 'follow'))}
+              aria-pressed={cameraMode === 'follow'}
+            >
+              Camera: {cameraMode === 'follow' ? 'Follow' : 'Cinematic'}
             </button>
             <input
               ref={bar}
@@ -326,6 +422,16 @@ export default function Seam() {
             against the same ground truth the bike actually followed.
           </p>
           <Evidence sim={sim} />
+          <div className="mt-6 flex flex-wrap items-start gap-6">
+            <CorridorLegend />
+            <p className="note m-0 max-w-[46ch] text-[14px] leading-relaxed">
+              The corridor above is built around the AI&nbsp;+&nbsp;ESKF estimate rather than around ground
+              truth, and its width at any point is the filter&rsquo;s own position uncertainty. Where it
+              narrows the filter is certain; where it opens out — underground, with no satellite fix — it
+              is estimating. The gates are spaced at real metres of estimated displacement, tightened
+              inside the bore.
+            </p>
+          </div>
         </section>
 
         {/* ---- the pipeline, stage by stage ---- */}
