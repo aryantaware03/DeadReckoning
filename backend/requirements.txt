@@ -1,0 +1,9 @@
+fastapi>=0.110
+uvicorn[standard]>=0.29
+numpy>=1.26
+scipy>=1.12
+# torch is optional: without it the backend runs in DEMO INFERENCE mode.
+# For LIVE Bi-LSTM training/inference on CPU:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+websockets>=12.0
+pydantic>=2.0
